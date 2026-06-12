@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFileRoutes } from "./files";
@@ -169,6 +169,86 @@ tl.fromTo("#box", { opacity: 0, x: -50 }, { opacity: 1, x: 0, duration: 1.5, eas
     expect(result.parsed.animations[0].fromProperties?.opacity).toBe(0.2);
     // x unchanged
     expect(result.parsed.animations[0].fromProperties?.x).toBe(-50);
+  });
+
+  it("rejects serialized non-finite mutation values before writing source", async () => {
+    const projectDir = createProjectDir();
+    writeHtml(projectDir, "comp.html", FROMTO_COMP);
+    const app = new Hono();
+    registerFileRoutes(app, createAdapter(projectDir));
+
+    const anim = await getFirstAnimation(app, "comp.html");
+    const before = readFileSync(join(projectDir, "comp.html"), "utf-8");
+    const res = await app.request("http://localhost/projects/demo/gsap-mutations/comp.html", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "update-property",
+        animationId: anim.id,
+        property: "x",
+        value: Number.NaN,
+      }),
+    });
+    const payload = (await res.json()) as { error?: string; fields?: string[] };
+
+    expect(res.status).toBe(400);
+    expect(payload.error).toContain("unsafe values");
+    expect(payload.fields).toContain("body.value");
+    expect(readFileSync(join(projectDir, "comp.html"), "utf-8")).toBe(before);
+  });
+
+  it("rejects unsafe DOM patch metadata before writing source", async () => {
+    const projectDir = createProjectDir();
+    writeFileSync(join(projectDir, "index.html"), '<div id="title">Before</div>');
+    const app = new Hono();
+    registerFileRoutes(app, createAdapter(projectDir));
+
+    const response = await app.request(
+      "http://localhost/projects/demo/file-mutations/patch-element/index.html",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: { id: "title", selectorIndex: Number.NaN },
+          operations: [{ type: "text-content", property: "textContent", value: "After" }],
+        }),
+      },
+    );
+    const payload = (await response.json()) as { error?: string; fields?: string[] };
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toContain("unsafe values");
+    expect(payload.fields).toContain("body.target.selectorIndex");
+    expect(readFileSync(join(projectDir, "index.html"), "utf-8")).toBe(
+      '<div id="title">Before</div>',
+    );
+  });
+
+  it("allows DOM patch null values used for explicit style removals", async () => {
+    const projectDir = createProjectDir();
+    writeFileSync(
+      join(projectDir, "index.html"),
+      '<div id="title" style="opacity: 1">Before</div>',
+    );
+    const app = new Hono();
+    registerFileRoutes(app, createAdapter(projectDir));
+
+    const response = await app.request(
+      "http://localhost/projects/demo/file-mutations/patch-element/index.html",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: { id: "title" },
+          operations: [{ type: "inline-style", property: "opacity", value: null }],
+        }),
+      },
+    );
+    const payload = (await response.json()) as { changed?: boolean; content?: string };
+
+    expect(response.status).toBe(200);
+    expect(payload.changed).toBe(true);
+    expect(payload.content).not.toContain("opacity");
   });
 
   it("update-from-property returns 400 for a non-fromTo animation", async () => {

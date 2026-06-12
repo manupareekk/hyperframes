@@ -1,6 +1,6 @@
 import { useCallback, useRef } from "react";
+import { findUnsafeDomPatchValues } from "@hyperframes/core/studio-api/finite-mutation";
 import { usePlayerStore } from "../player";
-import { STUDIO_GSAP_DRAG_INTERCEPT_ENABLED } from "../components/editor/manualEditingAvailability";
 import { FONT_EXT } from "../utils/mediaTypes";
 import type { PatchOperation } from "../utils/sourcePatcher";
 import { trackStudioEvent } from "../utils/studioTelemetry";
@@ -39,40 +39,28 @@ import {
 import { fontFamilyFromAssetPath, type ImportedFontAsset } from "../components/editor/fontAssets";
 import type { DomEditGroupPathOffsetCommit } from "../components/editor/DomEditOverlay";
 import type { EditHistoryKind } from "../utils/editHistory";
+import { isElementGsapTargeted } from "./domEditGsapTargeting";
 import { useDomEditTextCommits } from "./useDomEditTextCommits";
 
-// ── Helpers ──
-type TimelineLike = { getChildren?: (nested: boolean) => Array<{ targets?: () => Element[] }> };
+function formatUnsafeFieldList(fields: Array<{ path: string }>): string {
+  return fields.map((field) => field.path).join(", ");
+}
 
-// fallow-ignore-next-line complexity
-function isElementGsapTargeted(iframe: HTMLIFrameElement | null, element: HTMLElement): boolean {
-  // When the GSAP drag intercept is disabled for debugging, treat every
-  // element as un-targeted so commits take the plain CSS persist path.
-  if (!STUDIO_GSAP_DRAG_INTERCEPT_ENABLED) return false;
-  if (!iframe?.contentWindow) return false;
-  let timelines: Record<string, TimelineLike> | undefined;
-  try {
-    timelines = (iframe.contentWindow as Window & { __timelines?: Record<string, TimelineLike> })
-      .__timelines;
-  } catch {
-    return false;
-  }
-  if (!timelines) return false;
-  const id = element.id;
-  for (const tl of Object.values(timelines)) {
-    if (!tl?.getChildren) continue;
-    try {
-      for (const child of tl.getChildren(true)) {
-        if (!child.targets) continue;
-        for (const t of child.targets()) {
-          if (t === element || (id && t.id === id)) return true;
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-  return false;
+async function readErrorResponseBody(
+  response: Response,
+): Promise<{ error?: string; fields?: string[] } | null> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return null;
+  return (await response.json().catch(() => null)) as { error?: string; fields?: string[] } | null;
+}
+
+function formatPatchRejectionMessage(body: { error?: string; fields?: string[] } | null): string {
+  if (!body?.error) return "Couldn't save edit";
+  const fields = Array.isArray(body.fields)
+    ? body.fields.filter((field): field is string => typeof field === "string")
+    : [];
+  const suffix = fields.length > 0 ? ` (${fields.join(", ")})` : "";
+  return `Couldn't save edit: ${body.error}${suffix}`;
 }
 
 // ── Types ──
@@ -193,6 +181,13 @@ export function useDomEditCommits({
       if (options?.shouldSave && !options.shouldSave()) return;
 
       const patchTarget = buildDomEditPatchTarget(selection);
+      const patchBody = { target: patchTarget, operations };
+      const unsafeFields = findUnsafeDomPatchValues(patchBody);
+      if (unsafeFields.length > 0) {
+        const fields = formatUnsafeFieldList(unsafeFields);
+        showToast("Couldn't save edit because it contains invalid layout values", "error");
+        throw new Error(`DOM patch contains unsafe values: ${fields}`);
+      }
 
       // Mark the save timestamp before the file write so the SSE file-change
       // handler suppresses the reload even if the event arrives before the
@@ -204,10 +199,13 @@ export function useDomEditCommits({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: patchTarget, operations }),
+          body: JSON.stringify(patchBody),
         },
       );
-      if (!patchResponse.ok) throw new Error(`Failed to patch ${targetPath}`);
+      if (!patchResponse.ok) {
+        showToast(formatPatchRejectionMessage(await readErrorResponseBody(patchResponse)), "error");
+        throw new Error(`Failed to patch ${targetPath}`);
+      }
 
       const patchData = (await patchResponse.json()) as {
         ok?: boolean;
@@ -265,6 +263,7 @@ export function useDomEditCommits({
       projectIdRef,
       domEditSaveTimestampRef,
       reloadPreview,
+      showToast,
     ],
   );
 

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { GsapAnimation, ParsedGsap } from "@hyperframes/core/gsap-parser";
+import {
+  findUnsafeDomPatchValues,
+  findUnsafeMutationValues,
+} from "@hyperframes/core/studio-api/finite-mutation";
 import type { DomEditSelection } from "../components/editor/domEditingTypes";
 import type { EditHistoryKind } from "../utils/editHistory";
 import { applySoftReload } from "../utils/gsapSoftReload";
@@ -11,42 +15,16 @@ import {
   readKeyframeSnapshot,
   writeKeyframeCache,
 } from "./gsapKeyframeCacheHelpers";
+import {
+  GsapMutationHttpError,
+  ensureElementAddressable,
+  formatGsapMutationRejectionToast,
+  PROPERTY_DEFAULTS,
+  readJsonResponseBody,
+} from "./gsapScriptCommitHelpers";
 
-const PROPERTY_DEFAULTS: Record<string, number> = {
-  opacity: 1,
-  x: 0,
-  y: 0,
-  scale: 1,
-  scaleX: 1,
-  scaleY: 1,
-  rotation: 0,
-  width: 100,
-  height: 100,
-};
-
-/**
- * Ensures the element has an id so it can be targeted by a GSAP selector.
- * If the element already has an id or a CSS selector, returns those.
- * Otherwise mints a unique id and sets it on the live element.
- */
-function ensureElementAddressable(selection: DomEditSelection): {
-  selector: string;
-  autoId?: string;
-} {
-  if (selection.id) return { selector: `#${selection.id}` };
-  if (selection.selector) return { selector: selection.selector };
-
-  const el = selection.element;
-  const doc = el.ownerDocument;
-  const tag = el.tagName.toLowerCase();
-  let id = tag;
-  let n = 1;
-  while (doc.getElementById(id)) {
-    n += 1;
-    id = `${tag}-${n}`;
-  }
-  el.setAttribute("id", id);
-  return { selector: `#${id}`, autoId: id };
+function formatUnsafeFieldList(fields: Array<{ path: string }>): string {
+  return fields.map((field) => field.path).join(", ");
 }
 
 interface MutationResult {
@@ -62,21 +40,19 @@ async function mutateGsapScript(
   projectId: string,
   sourceFile: string,
   mutation: Record<string, unknown>,
-): Promise<MutationResult | null> {
-  try {
-    const res = await fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/gsap-mutations/${encodeURIComponent(sourceFile)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mutation),
-      },
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as MutationResult;
-  } catch {
-    return null;
+): Promise<MutationResult> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/gsap-mutations/${encodeURIComponent(sourceFile)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mutation),
+    },
+  );
+  if (!res.ok) {
+    throw new GsapMutationHttpError(res.status, await readJsonResponseBody(res));
   }
+  return (await res.json()) as MutationResult;
 }
 interface GsapScriptCommitsParams {
   projectIdRef: React.MutableRefObject<string | null>;
@@ -94,6 +70,7 @@ interface GsapScriptCommitsParams {
   reloadPreview: () => void;
   onCacheInvalidate: () => void;
   onFileContentChanged?: (path: string, content: string) => void;
+  showToast?: (message: string, tone?: "error" | "info") => void;
 }
 const DEBOUNCE_MS = 150;
 
@@ -107,6 +84,7 @@ export function useGsapScriptCommits({
   reloadPreview,
   onCacheInvalidate,
   onFileContentChanged,
+  showToast,
 }: GsapScriptCommitsParams) {
   const pendingPropertyEditRef = useRef<{
     selection: DomEditSelection;
@@ -131,11 +109,25 @@ export function useGsapScriptCommits({
     ) => {
       const pid = projectIdRef.current;
       if (!pid) return;
-      const targetPath = selection.sourceFile || activeCompPath || "index.html";
-      const result = await mutateGsapScript(pid, targetPath, mutation);
-      if (!result) {
+      const unsafeFields = findUnsafeMutationValues(mutation);
+      if (unsafeFields.length > 0) {
+        showToast?.(
+          "Couldn't read element layout — try again at a different playhead time",
+          "error",
+        );
         if (options.skipReload) return;
-        throw new Error(`Mutation failed: ${mutation.type}`);
+        throw new Error(`Mutation contains unsafe values: ${formatUnsafeFieldList(unsafeFields)}`);
+      }
+      const targetPath = selection.sourceFile || activeCompPath || "index.html";
+      let result: MutationResult;
+      try {
+        result = await mutateGsapScript(pid, targetPath, mutation);
+      } catch (error) {
+        if (error instanceof GsapMutationHttpError) {
+          showToast?.(formatGsapMutationRejectionToast(error), "error");
+        }
+        if (options.skipReload) return;
+        throw error;
       }
 
       if (result.changed === false) {
@@ -195,6 +187,7 @@ export function useGsapScriptCommits({
       reloadPreview,
       onCacheInvalidate,
       onFileContentChanged,
+      showToast,
     ],
   );
   const flushPendingPropertyEdit = useCallback(() => {
@@ -283,23 +276,40 @@ export function useGsapScriptCommits({
         const pid = projectIdRef.current;
         const targetPath = selection.sourceFile || activeCompPath || "index.html";
         if (!pid) return;
+        const patchBody = {
+          target: {
+            id: selection.id,
+            hfId: selection.hfId,
+            selector: selection.selector,
+            selectorIndex: selection.selectorIndex,
+          },
+          operations: [{ type: "html-attribute", property: "id", value: autoId }],
+        };
+        const unsafePatchFields = findUnsafeDomPatchValues(patchBody);
+        if (unsafePatchFields.length > 0) {
+          showToast?.(
+            "Couldn't assign element id because the patch contains invalid values",
+            "error",
+          );
+          return;
+        }
         const res = await fetch(
           `/api/projects/${encodeURIComponent(pid)}/file-mutations/patch-element/${encodeURIComponent(targetPath)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              target: {
-                id: selection.id,
-                hfId: selection.hfId,
-                selector: selection.selector,
-                selectorIndex: selection.selectorIndex,
-              },
-              operations: [{ type: "html-attribute", property: "id", value: autoId }],
-            }),
+            body: JSON.stringify(patchBody),
           },
         );
-        if (!res.ok) return;
+        if (!res.ok) {
+          showToast?.(
+            formatGsapMutationRejectionToast(
+              new GsapMutationHttpError(res.status, await readJsonResponseBody(res)),
+            ),
+            "error",
+          );
+          return;
+        }
         const data = (await res.json()) as { changed?: boolean };
         if (!data.changed) return;
       }
@@ -330,7 +340,7 @@ export function useGsapScriptCommits({
         { label: `Add GSAP ${method} animation` },
       );
     },
-    [commitMutation, projectIdRef, activeCompPath],
+    [commitMutation, projectIdRef, activeCompPath, showToast],
   );
   const addGsapProperty = useCallback(
     // fallow-ignore-next-line complexity
@@ -488,7 +498,7 @@ export function useGsapScriptCommits({
       return commitMutation(
         selection,
         { type: "convert-to-keyframes", animationId, resolvedFromValues },
-        { label: "Convert to keyframes" },
+        { label: "Convert to keyframes", softReload: true },
       );
     },
     [commitMutation],
