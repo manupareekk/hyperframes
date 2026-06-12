@@ -80,7 +80,6 @@ export function useInspectorState(
   rightCollapsed: boolean,
   isPlaying: boolean,
   domEditSelection: DomEditSelection | null,
-  isGestureRecording?: boolean,
 ): InspectorState {
   // fallow-ignore-next-line complexity
   return useMemo(() => {
@@ -101,10 +100,9 @@ export function useInspectorState(
       inspectorPanelActive,
       inspectorButtonActive:
         STUDIO_INSPECTOR_PANELS_ENABLED && !rightCollapsed && inspectorPanelActive,
-      shouldShowSelectedDomBounds:
-        inspectorPanelActive && !rightCollapsed && !isPlaying && !isGestureRecording,
+      shouldShowSelectedDomBounds: inspectorPanelActive && !rightCollapsed && !isPlaying,
     };
-  }, [rightPanelTab, rightCollapsed, isPlaying, domEditSelection, isGestureRecording]);
+  }, [rightPanelTab, rightCollapsed, isPlaying, domEditSelection]);
 }
 
 // fallow-ignore-next-line complexity

@@ -97,7 +97,7 @@ describe("focusDomEditOverlayElement", () => {
 });
 
 describe("DomEditOverlay", () => {
-  it("renders selected bounds right after clicking a movable selection", async () => {
+  it("renders selected bounds and record badge right after clicking a movable selection", async () => {
     // The overlay's compRect updates via a RAF loop reading iframe + overlay
     // getBoundingClientRect. happy-dom returns all zeros for newly-created
     // elements with no layout, so without stubs the RAF early-returns
@@ -154,6 +154,7 @@ describe("DomEditOverlay", () => {
     };
 
     let currentSelection: DomEditSelection | null = null;
+    const onToggleRecording = vi.fn();
     const iframeRef = { current: document.createElement("iframe") as HTMLIFrameElement | null };
     const originalPointerCapture = HTMLDivElement.prototype.setPointerCapture;
     HTMLDivElement.prototype.setPointerCapture = () => {};
@@ -178,6 +179,8 @@ describe("DomEditOverlay", () => {
         onGroupPathOffsetCommit: () => {},
         onBoxSizeCommit: () => {},
         onRotationCommit: () => {},
+        recordingState: "idle",
+        onToggleRecording,
       });
     }
 
@@ -210,6 +213,16 @@ describe("DomEditOverlay", () => {
 
     expect(currentSelection).toBe(selection);
     expect(host.querySelector('[data-dom-edit-selection-box="true"]')).toBeTruthy();
+    const recordButton = host.querySelector(
+      '[aria-label="Record gesture (R)"]',
+    ) as HTMLButtonElement;
+    expect(recordButton).toBeTruthy();
+
+    act(() => {
+      recordButton.click();
+    });
+
+    expect(onToggleRecording).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();
