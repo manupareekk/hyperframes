@@ -212,8 +212,8 @@ export const LABEL = "text-[11px] font-medium text-panel-text-3";
 export const RESPONSIVE_GRID = "grid grid-cols-[repeat(auto-fit,minmax(118px,1fr))] gap-3";
 export const EMPTY_STYLES: Record<string, string> = {};
 
-export const EMPTY_FILTER_VALUE = "none";
-export const BOX_SHADOW_PRESETS = {
+const EMPTY_FILTER_VALUE = "none";
+const BOX_SHADOW_PRESETS = {
   none: "none",
   soft: "0 12px 36px rgba(0, 0, 0, 0.28)",
   lift: "0 18px 54px rgba(0, 0, 0, 0.38)",
@@ -268,12 +268,7 @@ export function parsePxMetricValue(value: string): number | null {
   return token.value;
 }
 
-export function clampPanelNumber(
-  value: number,
-  min: number,
-  max: number,
-  fallback: number,
-): number {
+function clampPanelNumber(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, value));
 }
@@ -477,40 +472,6 @@ export function extractBackgroundImageUrl(value: string | undefined): string {
   const endParen = value.indexOf(")", index);
   if (endParen < index) return "";
   return value.slice(index, endParen).trim();
-}
-
-// ── Fit to children ──────────────────────────────────────────────────
-
-export function computeFitToChildrenSize(
-  element: DomEditSelection,
-): { width: number; height: number } | null {
-  const el = element.element;
-  const win = el.ownerDocument?.defaultView;
-  const children = Array.from(el.children).filter((c): c is HTMLElement => c.nodeType === 1);
-  if (children.length === 0) return null;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const child of children) {
-    if (win) {
-      const cs = win.getComputedStyle(child);
-      if (cs.visibility === "hidden" || cs.display === "none") continue;
-    }
-    const r = child.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) continue;
-    minX = Math.min(minX, r.left);
-    minY = Math.min(minY, r.top);
-    maxX = Math.max(maxX, r.right);
-    maxY = Math.max(maxY, r.bottom);
-  }
-  if (!isFinite(minX)) return null;
-  const parentRect = el.getBoundingClientRect();
-  const scaleX = parentRect.width > 0 ? element.boundingBox.width / parentRect.width : 1;
-  const scaleY = parentRect.height > 0 ? element.boundingBox.height / parentRect.height : 1;
-  const width = Math.round((maxX - minX) * scaleX);
-  const height = Math.round((maxY - minY) * scaleY);
-  return width > 0 && height > 0 ? { width, height } : null;
 }
 
 // ── GSAP runtime value readers (used by PropertyPanel) ────────────────────

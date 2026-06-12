@@ -59,13 +59,12 @@ export function usePreviewPersistence({
   const domTextCommitVersionRef = useRef(0);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
-  const domEditSaveQueueRef = useRef<ReturnType<typeof createDomEditSaveQueue> | null>(null);
   const applyStudioManualEditsToPreviewRef = useRef<
     (iframe?: HTMLIFrameElement | null) => Promise<void>
   >(async () => {});
 
-  if (!domEditSaveQueueRef.current) {
-    domEditSaveQueueRef.current = createDomEditSaveQueue({
+  const [domEditSaveQueue] = useState(() =>
+    createDomEditSaveQueue({
       onOpen: (event) => {
         const message = "Auto-save is paused. Check your connection.";
         setDomEditSaveQueuePaused(message);
@@ -80,8 +79,8 @@ export function usePreviewPersistence({
       onReset: () => {
         setDomEditSaveQueuePaused(null);
       },
-    });
-  }
+    }),
+  );
 
   // Keep a ref to the latest projectId so async save callbacks always read the
   // current value, even when the callback was captured in a stale closure.
@@ -90,21 +89,24 @@ export function usePreviewPersistence({
 
   // ── Queue / drain helpers ──
 
-  const queueDomEditSave = useCallback((save: () => Promise<void>) => {
-    return domEditSaveQueueRef.current?.enqueue(save) ?? save();
-  }, []);
+  const queueDomEditSave = useCallback(
+    (save: () => Promise<void>) => {
+      return domEditSaveQueue.enqueue(save);
+    },
+    [domEditSaveQueue],
+  );
 
   const waitForPendingDomEditSaves = useCallback(async () => {
-    await domEditSaveQueueRef.current?.waitForIdle();
-  }, []);
+    await domEditSaveQueue.waitForIdle();
+  }, [domEditSaveQueue]);
 
   const resetDomEditSaveQueueBreaker = useCallback(() => {
-    domEditSaveQueueRef.current?.reset();
+    domEditSaveQueue.reset();
     setDomEditSaveQueuePaused(null);
-  }, []);
+  }, [domEditSaveQueue]);
 
   useMountEffect(() => () => {
-    domEditSaveQueueRef.current?.destroy();
+    domEditSaveQueue.destroy();
   });
 
   // ── Apply manual edits (HTML-baked — install seek hooks) ──
@@ -216,7 +218,6 @@ export function usePreviewPersistence({
 
   return {
     domTextCommitVersionRef,
-    domEditSaveQueueRef,
     applyStudioManualEditsToPreviewRef,
     queueDomEditSave,
     waitForPendingDomEditSaves,

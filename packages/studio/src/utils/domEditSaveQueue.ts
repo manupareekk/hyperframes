@@ -21,7 +21,7 @@ export interface DomEditSaveQueue {
 
 const DEFAULT_FAILURE_THRESHOLD = 5;
 
-export class DomEditSaveQueueOpenError extends Error {
+class DomEditSaveQueueOpenError extends Error {
   constructor() {
     super("Auto-save is paused. Dismiss the warning to retry DOM edits.");
     this.name = "DomEditSaveQueueOpenError";
@@ -55,7 +55,7 @@ export function createDomEditSaveQueue(options: DomEditSaveQueueOptions = {}): D
   const run = async (save: () => Promise<void>) => {
     try {
       await save();
-      reset();
+      if (!breakerOpen) consecutiveFailures = 0;
     } catch (error) {
       consecutiveFailures += 1;
       if (consecutiveFailures >= failureThreshold) open(error);
@@ -84,4 +84,8 @@ export function createDomEditSaveQueue(options: DomEditSaveQueueOptions = {}): D
       reset(false);
     },
   };
+}
+
+export function isDomEditSaveQueueOpenError(error: unknown): error is DomEditSaveQueueOpenError {
+  return error instanceof DomEditSaveQueueOpenError;
 }

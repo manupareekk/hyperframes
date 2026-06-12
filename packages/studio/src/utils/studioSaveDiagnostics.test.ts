@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   StudioSaveHttpError,
+  StudioSaveNetworkError,
   buildStudioSaveFailureProperties,
   getStudioSaveStatusCode,
   retryStudioSave,
@@ -75,6 +76,36 @@ describe("studio save diagnostics", () => {
     ).rejects.toThrow("Too large");
 
     expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry local assertion failures without a transient error type", async () => {
+    const operation = vi
+      .fn<(attempt: number) => Promise<string>>()
+      .mockRejectedValue(new Error("Missing file contents"));
+
+    await expect(
+      retryStudioSave(operation, {
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow("Missing file contents");
+
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries typed network failures without treating every statusless error as transient", async () => {
+    const operation = vi
+      .fn<(attempt: number) => Promise<string>>()
+      .mockRejectedValueOnce(new StudioSaveNetworkError("Network error"))
+      .mockResolvedValue("saved");
+
+    await expect(
+      retryStudioSave(operation, {
+        random: () => 0.5,
+        sleep: async () => {},
+      }),
+    ).resolves.toBe("saved");
+
+    expect(operation).toHaveBeenCalledTimes(2);
   });
 
   it("aborts while waiting between retry attempts", async () => {

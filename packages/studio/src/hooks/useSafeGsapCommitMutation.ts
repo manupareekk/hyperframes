@@ -48,6 +48,7 @@ export function useGsapSaveFailureTelemetry(activeCompPath: string | null): Trac
 export function useSafeGsapCommitMutation(
   commitMutation: CommitMutation,
   trackGsapSaveFailure: TrackGsapSaveFailure,
+  showToast: (message: string, tone?: "error" | "info") => void,
 ) {
   return useCallback(
     (
@@ -57,8 +58,12 @@ export function useSafeGsapCommitMutation(
     ) => {
       void commitMutation(selection, mutation, options).catch((error) => {
         trackGsapSaveFailure(error, selection, mutation, options.label);
+        showToast(
+          error instanceof Error ? error.message : "Failed to save animated edit.",
+          "error",
+        );
       });
     },
-    [commitMutation, trackGsapSaveFailure],
+    [commitMutation, trackGsapSaveFailure, showToast],
   );
 }

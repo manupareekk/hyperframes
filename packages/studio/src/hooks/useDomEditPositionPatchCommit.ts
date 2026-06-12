@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { DomEditSelection } from "../components/editor/domEditing";
 import type { PatchOperation } from "../utils/sourcePatcher";
 import { trackStudioSaveFailure } from "../utils/studioSaveDiagnostics";
+import { isDomEditSaveQueueOpenError } from "../utils/domEditSaveQueue";
 import type { PersistDomEditOperations } from "./useDomEditCommits";
 
 interface UseDomEditPositionPatchCommitParams {
@@ -32,6 +33,7 @@ export function useDomEditPositionPatchCommit({
           skipRefresh: options.skipRefresh ?? true,
         });
       }).catch((error) => {
+        if (isDomEditSaveQueueOpenError(error)) return;
         showToast(error instanceof Error ? error.message : "Failed to save position");
         trackStudioSaveFailure({
           source: "dom_edit",

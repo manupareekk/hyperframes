@@ -16,46 +16,11 @@ import {
   useGsapSaveFailureTelemetry,
   useSafeGsapCommitMutation,
 } from "./useSafeGsapCommitMutation";
-
-const PROPERTY_DEFAULTS: Record<string, number> = {
-  opacity: 1,
-  x: 0,
-  y: 0,
-  scale: 1,
-  scaleX: 1,
-  scaleY: 1,
-  rotation: 0,
-  width: 100,
-  height: 100,
-};
-
-/**
- * Ensures the element has an id so it can be targeted by a GSAP selector.
- * If the element already has an id or a CSS selector, returns those.
- * Otherwise mints a unique id and sets it on the live element.
- */
-function ensureElementAddressable(selection: DomEditSelection): {
-  selector: string;
-  autoId?: string;
-} {
-  if (selection.id) return { selector: `#${selection.id}` };
-  if (selection.selector) return { selector: selection.selector };
-
-  const el = selection.element;
-  const doc = el.ownerDocument;
-  const tag = el.tagName.toLowerCase();
-  let id = tag;
-  let n = 1;
-  while (doc.getElementById(id)) {
-    n += 1;
-    id = `${tag}-${n}`;
-  }
-  el.setAttribute("id", id);
-  return { selector: `#${id}`, autoId: id };
-}
+import { ensureElementAddressable, PROPERTY_DEFAULTS } from "./gsapScriptCommitHelpers";
 
 interface MutationResult {
   ok: boolean;
+  changed?: boolean;
   parsed?: ParsedGsap;
   before?: string;
   after?: string;
@@ -100,6 +65,7 @@ interface GsapScriptCommitsParams {
   reloadPreview: () => void;
   onCacheInvalidate: () => void;
   onFileContentChanged?: (path: string, content: string) => void;
+  showToast: (message: string, tone?: "error" | "info") => void;
 }
 const DEBOUNCE_MS = 150;
 
@@ -113,6 +79,7 @@ export function useGsapScriptCommits({
   reloadPreview,
   onCacheInvalidate,
   onFileContentChanged,
+  showToast,
 }: GsapScriptCommitsParams) {
   const pendingPropertyEditRef = useRef<{
     selection: DomEditSelection;
@@ -138,8 +105,12 @@ export function useGsapScriptCommits({
       const pid = projectIdRef.current;
       if (!pid) return;
       const targetPath = selection.sourceFile || activeCompPath || "index.html";
-
       const result = await mutateGsapScript(pid, targetPath, mutation);
+
+      if (result.changed === false) {
+        if (options.skipReload) return;
+        return;
+      }
 
       domEditSaveTimestampRef.current = Date.now();
 
@@ -197,7 +168,11 @@ export function useGsapScriptCommits({
   );
 
   const trackGsapSaveFailure = useGsapSaveFailureTelemetry(activeCompPath);
-  const commitMutationSafely = useSafeGsapCommitMutation(commitMutation, trackGsapSaveFailure);
+  const commitMutationSafely = useSafeGsapCommitMutation(
+    commitMutation,
+    trackGsapSaveFailure,
+    showToast,
+  );
 
   const flushPendingPropertyEdit = useCallback(() => {
     const pending = pendingPropertyEditRef.current;
@@ -261,6 +236,16 @@ export function useGsapScriptCommits({
       );
     },
     [commitMutationSafely],
+  );
+  const deleteAllForSelector = useCallback(
+    (selection: DomEditSelection, targetSelector: string) => {
+      void commitMutation(
+        selection,
+        { type: "delete-all-for-selector", targetSelector },
+        { label: "Delete all animations for element" },
+      );
+    },
+    [commitMutation],
   );
   const addGsapAnimation = useCallback(
     // fallow-ignore-next-line complexity
@@ -466,7 +451,9 @@ export function useGsapScriptCommits({
         apply: () => {
           const prev = readKeyframeSnapshot(sf, elementId);
           if (prev) {
-            const newKeyframes = prev.keyframes.filter((kf) => kf.percentage !== percentage);
+            const newKeyframes = prev.keyframes.filter(
+              (kf) => Math.abs((kf.tweenPercentage ?? kf.percentage) - percentage) > 0.2,
+            );
             writeKeyframeCache(sf, elementId, { ...prev, keyframes: newKeyframes });
           }
           return prev;
@@ -574,6 +561,7 @@ export function useGsapScriptCommits({
     updateGsapProperty,
     updateGsapMeta,
     deleteGsapAnimation,
+    deleteAllForSelector,
     addGsapAnimation,
     addGsapProperty,
     removeGsapProperty,
