@@ -20,6 +20,7 @@ import { STUDIO_GSAP_PANEL_ENABLED, STUDIO_KEYFRAMES_ENABLED } from "./manualEdi
 import { usePlayerStore, liveTime } from "../../player";
 import { TimingSection } from "./propertyPanelTimingSection";
 import { type PropertyPanelProps } from "./propertyPanelHelpers";
+import { useAnimatedPropertyCommitTelemetry } from "../../hooks/useAnimatedPropertyCommitTelemetry";
 
 // Re-export helpers that external consumers import from this module
 export {
@@ -111,6 +112,8 @@ export const PropertyPanel = memo(function PropertyPanel({
   const currentTime = isPlaying ? liveTimeRef.current : storeTime;
   const cacheElementKey = element?.id ?? element?.selector ?? "";
   const cacheEntry = usePlayerStore((s) => s.keyframeCache.get(cacheElementKey));
+  const { commitAnimatedPropertySafely, commitAnimatedPropertyWithTelemetry } =
+    useAnimatedPropertyCommitTelemetry(onCommitAnimatedProperty);
 
   if (!element) {
     return (
@@ -163,7 +166,7 @@ export const PropertyPanel = memo(function PropertyPanel({
     const parsed = parsePxMetricValue(nextValue);
     if (parsed == null) return;
     if (onCommitAnimatedProperty && hasGsapAnimation) {
-      void onCommitAnimatedProperty(element, axis, parsed);
+      commitAnimatedPropertySafely(element, axis, parsed);
       return;
     }
     if (gsapKeyframes && gsapAnimId && onAddKeyframe) {
@@ -176,10 +179,12 @@ export const PropertyPanel = memo(function PropertyPanel({
       return;
     }
     const current = readStudioPathOffset(element.element);
-    onSetManualOffset(element, {
-      x: axis === "x" ? parsed : current.x,
-      y: axis === "y" ? parsed : current.y,
-    });
+    void Promise.resolve(
+      onSetManualOffset(element, {
+        x: axis === "x" ? parsed : current.x,
+        y: axis === "y" ? parsed : current.y,
+      }),
+    ).catch(() => {});
   };
 
   // fallow-ignore-next-line complexity
@@ -187,7 +192,7 @@ export const PropertyPanel = memo(function PropertyPanel({
     const parsed = parsePxMetricValue(nextValue);
     if (parsed == null || parsed <= 0) return;
     if (onCommitAnimatedProperty && hasGsapAnimation) {
-      void onCommitAnimatedProperty(element, axis, parsed);
+      commitAnimatedPropertySafely(element, axis, parsed);
       return;
     }
     if (hasGsapAnimation) {
@@ -203,17 +208,19 @@ export const PropertyPanel = memo(function PropertyPanel({
       current.height > 0
         ? current.height
         : (parsePxMetricValue(styles.height ?? "") ?? element.boundingBox.height);
-    onSetManualSize(element, {
-      width: axis === "width" ? parsed : width,
-      height: axis === "height" ? parsed : height,
-    });
+    void Promise.resolve(
+      onSetManualSize(element, {
+        width: axis === "width" ? parsed : width,
+        height: axis === "height" ? parsed : height,
+      }),
+    ).catch(() => {});
   };
 
   const manualRotation = readStudioRotation(element.element);
   const commitManualRotation = (nextValue: string) => {
     const parsed = Number.parseFloat(nextValue);
     if (!Number.isFinite(parsed)) return;
-    onSetManualRotation(element, { angle: parsed });
+    void Promise.resolve(onSetManualRotation(element, { angle: parsed })).catch(() => {});
   };
 
   const elStart = Number.parseFloat(element?.dataAttributes?.start ?? "0") || 0;
@@ -392,8 +399,7 @@ export const PropertyPanel = memo(function PropertyPanel({
                   currentPercentage={currentPct}
                   onSeek={seekFromKfPct}
                   onAddKeyframe={() =>
-                    onCommitAnimatedProperty &&
-                    void onCommitAnimatedProperty(element, "x", displayX)
+                    onCommitAnimatedProperty && commitAnimatedPropertySafely(element, "x", displayX)
                   }
                   onRemoveKeyframe={(pct) => onRemoveKeyframe?.(gsapAnimId, pct)}
                   onConvertToKeyframes={() => onConvertToKeyframes?.(gsapAnimId)}
@@ -417,8 +423,7 @@ export const PropertyPanel = memo(function PropertyPanel({
                   currentPercentage={currentPct}
                   onSeek={seekFromKfPct}
                   onAddKeyframe={() =>
-                    onCommitAnimatedProperty &&
-                    void onCommitAnimatedProperty(element, "y", displayY)
+                    onCommitAnimatedProperty && commitAnimatedPropertySafely(element, "y", displayY)
                   }
                   onRemoveKeyframe={(pct) => onRemoveKeyframe?.(gsapAnimId, pct)}
                   onConvertToKeyframes={() => onConvertToKeyframes?.(gsapAnimId)}
@@ -443,7 +448,7 @@ export const PropertyPanel = memo(function PropertyPanel({
                   onSeek={seekFromKfPct}
                   onAddKeyframe={() =>
                     onCommitAnimatedProperty &&
-                    void onCommitAnimatedProperty(element, "width", displayW)
+                    commitAnimatedPropertySafely(element, "width", displayW)
                   }
                   onRemoveKeyframe={(pct) => onRemoveKeyframe?.(gsapAnimId, pct)}
                   onConvertToKeyframes={() => onConvertToKeyframes?.(gsapAnimId)}
@@ -468,7 +473,7 @@ export const PropertyPanel = memo(function PropertyPanel({
                   onSeek={seekFromKfPct}
                   onAddKeyframe={() =>
                     onCommitAnimatedProperty &&
-                    void onCommitAnimatedProperty(element, "height", displayH)
+                    commitAnimatedPropertySafely(element, "height", displayH)
                   }
                   onRemoveKeyframe={(pct) => onRemoveKeyframe?.(gsapAnimId, pct)}
                   onConvertToKeyframes={() => onConvertToKeyframes?.(gsapAnimId)}
@@ -491,7 +496,7 @@ export const PropertyPanel = memo(function PropertyPanel({
                   onSeek={seekFromKfPct}
                   onAddKeyframe={() =>
                     onCommitAnimatedProperty &&
-                    void onCommitAnimatedProperty(element, "rotation", displayR)
+                    commitAnimatedPropertySafely(element, "rotation", displayR)
                   }
                   onRemoveKeyframe={(pct) => onRemoveKeyframe?.(gsapAnimId, pct)}
                   onConvertToKeyframes={() => onConvertToKeyframes?.(gsapAnimId)}
@@ -508,7 +513,9 @@ export const PropertyPanel = memo(function PropertyPanel({
               elStart={elStart}
               elDuration={elDuration}
               element={element}
-              onCommitAnimatedProperty={onCommitAnimatedProperty}
+              onCommitAnimatedProperty={
+                onCommitAnimatedProperty ? commitAnimatedPropertyWithTelemetry : undefined
+              }
               onSeekToTime={onSeekToTime}
               onRemoveKeyframe={onRemoveKeyframe}
               onConvertToKeyframes={onConvertToKeyframes}

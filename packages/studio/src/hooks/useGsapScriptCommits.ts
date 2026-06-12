@@ -11,6 +11,11 @@ import {
   readKeyframeSnapshot,
   writeKeyframeCache,
 } from "./gsapKeyframeCacheHelpers";
+import { createStudioSaveHttpError } from "../utils/studioSaveDiagnostics";
+import {
+  useGsapSaveFailureTelemetry,
+  useSafeGsapCommitMutation,
+} from "./useSafeGsapCommitMutation";
 
 const PROPERTY_DEFAULTS: Record<string, number> = {
   opacity: 1,
@@ -61,21 +66,23 @@ async function mutateGsapScript(
   projectId: string,
   sourceFile: string,
   mutation: Record<string, unknown>,
-): Promise<MutationResult | null> {
-  try {
-    const res = await fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/gsap-mutations/${encodeURIComponent(sourceFile)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mutation),
-      },
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as MutationResult;
-  } catch {
-    return null;
+): Promise<MutationResult> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/gsap-mutations/${encodeURIComponent(sourceFile)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mutation),
+    },
+  );
+  if (!res.ok) {
+    throw await createStudioSaveHttpError(res, `Failed to update GSAP in ${sourceFile}`);
   }
+  const result = (await res.json()) as MutationResult;
+  if (!result.ok) {
+    throw new Error(`Failed to update GSAP in ${sourceFile}`);
+  }
+  return result;
 }
 interface GsapScriptCommitsParams {
   projectIdRef: React.MutableRefObject<string | null>;
@@ -133,7 +140,6 @@ export function useGsapScriptCommits({
       const targetPath = selection.sourceFile || activeCompPath || "index.html";
 
       const result = await mutateGsapScript(pid, targetPath, mutation);
-      if (!result?.ok) return;
 
       domEditSaveTimestampRef.current = Date.now();
 
@@ -189,12 +195,16 @@ export function useGsapScriptCommits({
       onFileContentChanged,
     ],
   );
+
+  const trackGsapSaveFailure = useGsapSaveFailureTelemetry(activeCompPath);
+  const commitMutationSafely = useSafeGsapCommitMutation(commitMutation, trackGsapSaveFailure);
+
   const flushPendingPropertyEdit = useCallback(() => {
     const pending = pendingPropertyEditRef.current;
     if (!pending) return;
     pendingPropertyEditRef.current = null;
     const { selection, animationId, property, value } = pending;
-    void commitMutation(
+    commitMutationSafely(
       selection,
       { type: "update-property", animationId, property, value },
       {
@@ -203,7 +213,7 @@ export function useGsapScriptCommits({
         softReload: true,
       },
     );
-  }, [commitMutation]);
+  }, [commitMutationSafely]);
 
   const updateGsapProperty = useCallback(
     (
@@ -231,7 +241,7 @@ export function useGsapScriptCommits({
       animationId: string,
       updates: { duration?: number; ease?: string; position?: number },
     ) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "update-meta", animationId, updates },
         {
@@ -240,17 +250,17 @@ export function useGsapScriptCommits({
         },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const deleteGsapAnimation = useCallback(
     (selection: DomEditSelection, animationId: string) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "delete", animationId, stripStudioEdits: true },
         { label: "Delete GSAP animation" },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const addGsapAnimation = useCallback(
     // fallow-ignore-next-line complexity
@@ -281,9 +291,16 @@ export function useGsapScriptCommits({
             }),
           },
         );
-        if (!res.ok) return;
+        if (!res.ok) {
+          throw await createStudioSaveHttpError(
+            res,
+            `Failed to assign element id in ${targetPath}`,
+          );
+        }
         const data = (await res.json()) as { changed?: boolean };
-        if (!data.changed) return;
+        if (!data.changed) {
+          throw new Error(`Failed to assign element id in ${targetPath}`);
+        }
       }
 
       const elStart = Number.parseFloat(selection.dataAttributes?.start ?? "0") || 0;
@@ -326,23 +343,23 @@ export function useGsapScriptCommits({
         const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
         defaultValue = cs ? Number.parseFloat(cs.opacity) || 1 : 1;
       }
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "add-property", animationId, property, defaultValue },
         { label: `Add GSAP ${property}` },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const removeGsapProperty = useCallback(
     (selection: DomEditSelection, animationId: string, property: string) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "remove-property", animationId, property },
         { label: `Remove GSAP ${property}` },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const updateGsapFromProperty = useCallback(
     (
@@ -351,7 +368,7 @@ export function useGsapScriptCommits({
       property: string,
       value: number | string,
     ) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "update-from-property", animationId, property, value },
         {
@@ -360,28 +377,28 @@ export function useGsapScriptCommits({
         },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const addGsapFromProperty = useCallback(
     (selection: DomEditSelection, animationId: string, property: string) => {
       const defaultValue = PROPERTY_DEFAULTS[property] ?? 0;
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "add-from-property", animationId, property, defaultValue },
         { label: `Add GSAP from-${property}` },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const removeGsapFromProperty = useCallback(
     (selection: DomEditSelection, animationId: string, property: string) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "remove-from-property", animationId, property },
         { label: `Remove GSAP from-${property}` },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const addKeyframe = useCallback(
     (
@@ -393,6 +410,12 @@ export function useGsapScriptCommits({
     ) => {
       const sf = selection.sourceFile || activeCompPath || "index.html";
       const elementId = selection.id;
+      const mutation = {
+        type: "add-keyframe",
+        animationId,
+        percentage,
+        properties: { [property]: value },
+      };
       void executeOptimistic<KeyframeCacheEntry | undefined>({
         apply: () => {
           const prev = readKeyframeSnapshot(sf, elementId);
@@ -406,17 +429,18 @@ export function useGsapScriptCommits({
           return prev;
         },
         persist: () =>
-          commitMutation(
-            selection,
-            { type: "add-keyframe", animationId, percentage, properties: { [property]: value } },
-            { label: `Add keyframe at ${percentage}%`, softReload: true },
-          ),
+          commitMutation(selection, mutation, {
+            label: `Add keyframe at ${percentage}%`,
+            softReload: true,
+          }),
         rollback: (prev) => {
           writeKeyframeCache(sf, elementId, prev);
         },
+      }).catch((error) => {
+        trackGsapSaveFailure(error, selection, mutation, `Add keyframe at ${percentage}%`);
       });
     },
-    [commitMutation, activeCompPath],
+    [commitMutation, activeCompPath, trackGsapSaveFailure],
   );
   const addKeyframeBatch = useCallback(
     (
@@ -437,6 +461,7 @@ export function useGsapScriptCommits({
     (selection: DomEditSelection, animationId: string, percentage: number) => {
       const sf = selection.sourceFile || activeCompPath || "index.html";
       const elementId = selection.id;
+      const mutation = { type: "remove-keyframe", animationId, percentage };
       void executeOptimistic<KeyframeCacheEntry | undefined>({
         apply: () => {
           const prev = readKeyframeSnapshot(sf, elementId);
@@ -447,17 +472,18 @@ export function useGsapScriptCommits({
           return prev;
         },
         persist: () =>
-          commitMutation(
-            selection,
-            { type: "remove-keyframe", animationId, percentage },
-            { label: `Remove keyframe at ${percentage}%`, softReload: true },
-          ),
+          commitMutation(selection, mutation, {
+            label: `Remove keyframe at ${percentage}%`,
+            softReload: true,
+          }),
         rollback: (prev) => {
           writeKeyframeCache(sf, elementId, prev);
         },
+      }).catch((error) => {
+        trackGsapSaveFailure(error, selection, mutation, `Remove keyframe at ${percentage}%`);
       });
     },
-    [commitMutation, activeCompPath],
+    [commitMutation, activeCompPath, trackGsapSaveFailure],
   );
   const convertToKeyframes = useCallback(
     (
@@ -475,13 +501,13 @@ export function useGsapScriptCommits({
   );
   const removeAllKeyframes = useCallback(
     (selection: DomEditSelection, animationId: string) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "remove-all-keyframes", animationId },
         { label: "Remove all keyframes", softReload: true },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const setArcPath = useCallback(
     (
@@ -497,13 +523,13 @@ export function useGsapScriptCommits({
         }>;
       },
     ) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "set-arc-path" as const, animationId, ...config },
         { label: config.enabled ? "Enable arc path" : "Disable arc path", softReload: true },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const updateArcSegment = useCallback(
     (
@@ -516,23 +542,23 @@ export function useGsapScriptCommits({
         cp2?: { x: number; y: number };
       },
     ) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "update-arc-segment" as const, animationId, segmentIndex, ...update },
         { label: "Update arc segment", softReload: true },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const removeArcPath = useCallback(
     (selection: DomEditSelection, animationId: string) => {
-      void commitMutation(
+      commitMutationSafely(
         selection,
         { type: "remove-arc-path" as const, animationId },
         { label: "Remove arc path", softReload: true },
       );
     },
-    [commitMutation],
+    [commitMutationSafely],
   );
   const commitKeyframeAtTime = useCallback(
     (
